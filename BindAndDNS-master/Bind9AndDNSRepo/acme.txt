@@ -1,0 +1,382 @@
+////Утсановка BIND9
+
+#1)  в файле /etc/bind/named.conf.local добавить строчку
+include "master.conf";
+#2) создать в /var/cache/bind/ файл price c такими параметрами:
+@ IN SOA ns1 root (                                     
+2020220647; ---serial
+1h                    
+20m               
+2w
+20m
+)
+@ NS ns1
+@ NS ns2
+ns1 IN  A       185.161.210.66
+ns2 IN  A       185.161.210.66
+@ IN A  185.161.210.66
+* IN A 185.161.210.66
+
+
+
+#3) в /var/cache/bind/ создать файл master.conf c параметрами:
+	zone "priceinfo.su" { type master; file "price";};
+
+!!! Перед настройкой nginx проверить работоспособность dig exemple.com
+где exemple.com имя веб ресурсa
+
+
+#####Настройка nginx
+
+#1)создать файл /etc/nginx/sites-available/priceinfo.su.conf c такими параметрами: 
+	server {
+	listen 80;
+	server_name .priceinfo.su;
+	root /var/www/html; 
+	index index.html;
+	autoindex on;
+	access_log /var/log/nginx/priceinfo_su_access.log combined; 
+	error_log /var/log/nginx/priceinfo_su_error.log;
+	}
+
+создать ссылку в sites-available на sites-enabled (без ссылки в sites-enabled конфиг домена не будет подключен)
+ln -s /etc/nginx/sites-available/priceinfo.su.conf /etc/nginx/sites-enabled/priceinfo.su.conf 
+nginx -t; nginx -s reload
+
+
+#2) Пропись ssl может выполнятся двумя способами: проверкой чере http и nginx.
+
+acme.sh может работать от обычного пользователя без необходимости иметь root-права. Помимо проверки владения доменом по HTTP есть вариант проверки через DNS. Нужно использовать один из способов.
+
+Для работы скрипта на шлюзе должны быть установлены пакеты:
+
+openssl
+curl
+# apt-get -y install curl openssl
+
+В ручную:
+
+useradd -m -s /bin/bash -d /home/acme/ acme
+# Проверить, если пользователя нет, а директорю /home/acme/ копировали с "рабочего" 
+сервера, то поправить права:
+chown -R acme. /home/acme/
+
+Зайти на сервер, и стать acme:
+
+su - acme
+
+Подготовить необходимое:
+
+mkdir ~/bin/
+curl -L -o ~/bin/acme.sh https://raw.githubusercontent.com/Neilpang/acme.sh/master/acme.sh
+chmod +x ~/bin/acme.sh
+
+
+//////////////////////////////Проверка через HTTP:
+
+
+acme.sh может организовать проверку владения доменом через HTTP. В конфиг вебсервера добавить обработку в урле /.well-known/ с указанием weboot-каталога, куда есть доступ у пользователя acme на запись. Не забудьте сигнал вебсерверу - перечитать конфиг.
+
+от рута
+
+Пример для nginx (прописывать в /etc/nginx/sites-available/priceinfo.su.conf перед в теле "server"):
+
+server {
+	listen 80;
+	server_name .priceinfo.su;
+	root /var/www/html; 
+	index index.html;
+	autoindex on;
+	access_log /var/log/nginx/priceinfo_su_access.log combined; 
+	error_log /var/log/nginx/priceinfo_su_error.log;
+//ДОБАВИТЬ
+	location /.well-known/ {
+        root /home/acme/webroot;
+	}
+
+	}
+
+ Если на сервере используется редирект с HTTP на HTTPS, то добавить лучше в результирующий сервер, обслуживающий HTTPS.
+
+Стать acme:
+
+su - acme
+
+В домашнем каталоге acme создать каталог webroot: mkdir ~/webroot.
+
+Проверить можно к примеру curl`ом:
+
+~$ mkdir -p ~/webroot/.well-known/acme-challenge
+~$ echo Test > ~/webroot/.well-known/acme-challenge/test.html
+~$ curl -L http://priceinfo.su/.well-known/acme-challenge/test.html
+Test
+
+если не отработало rndc reload
+
+~$ rm ~/webroot/.well-known/acme-challenge/test.html
+
+~/bin/acme.sh --issue -d priceinfo.su -d www.priceinfo.su -w ~/webroot
+
+Ключ и сертификаты будут в каталоге /home/acme/.acme.sh/priceinfo.su/
+
+из под root
+
+сгенерить шифр в каталоге nginx
+openssl dhparam -out dhparams.pem 2048
+
+
+в каталоге /etc/nginx/ создать директорию certs
+
+mkdir certs
+
+в ней создать ссылку на сертификаты 
+
+ln -s ~acme/.acme.sh/priceinfo.su /etc/nginx/certs/
+
+перечитать конфиг nginx -s reload
+
+
+/////////////////////Проверка через DNS
+
+от рута 
+
+Шаг 1. Стать acme:
+
+su - acme
+
+Шаг 2. Выполнить:
+
+~/bin/acme.sh --issue --dns -d example.net -d www.example.net --yes-I-know-dns-manual-mode-enough-go-ahead-please
+
+ Если появляеться ошибка - No such file or directory. Нужно использовать команды:
+
+curl -L -o ~/bin/acme.sh https://raw.githubusercontent.com/Neilpang/acme.sh/master/acme.sh 
+chmod +x ~/bin/acme.sh
+
+
+
+ В процессе работы в консоль будут выведены записи, которые необходимо добавить в зону:
+
+[Tue Sep  5 13:51:24 UTC 2017] Add the following TXT record:
+[Tue Sep  5 13:51:24 UTC 2017] Domain: '_acme-challenge.example.net'
+[Tue Sep  5 13:51:24 UTC 2017] TXT value: 'bFU47feB8Kw289-8osmlDMvr6lYCXI8c_juvMrTcHk0'
+[Tue Sep  5 13:51:24 UTC 2017] Please be aware that you prepend _acme-challenge. before your domain
+[Tue Sep  5 13:51:24 UTC 2017] so the resulting subdomain will be: _acme-challenge.example.net
+[Tue Sep  5 13:51:24 UTC 2017] Add the following TXT record:
+[Tue Sep  5 13:51:24 UTC 2017] Domain: '_acme-challenge.www.example.net'
+[Tue Sep  5 13:51:24 UTC 2017] TXT value: 'qShSqK6pU8fEzs-aKhb9Yxd9uhT9x81fhW_hsRowcz0'
+[Tue Sep  5 13:51:24 UTC 2017] Please be aware that you prepend _acme-challenge. before your domain
+[Tue Sep  5 13:51:24 UTC 2017] so the resulting subdomain will be: _acme-challenge.www.example.net
+
+# Прописать в  
+/var/cache/bind/price 
+строку 
+
+_acme-challenge.priceinfo.su.   IN      TXT     "......"
+_acme-challenge.www.priceinfo.su.   IN      TXT     "......"
+
+после прописи ТХТ записей выполнить
+
+rndc flush
+rndc reload
+
+
+~/bin/acme.sh --renew --dns -d priceinfo.su -d '*.priceinfo.su' --yes-I-know-dns-manual-mode-enough-go-ahead-please
+
+
+
+
+
+####################### После прописи сертификата:
+
+Прописать конфиг на https в  /etc/nignx/sites-availabe/priceinfo.su.conf
+server {
+listen       443;
+server_name .priceinfo.su;
+ssl 				on;
+ssl_protocols       		TLSv1 TLSv1.1 TLSv1.2;
+ssl_ciphers         		HIGH:!aNULL:!MD5;
+ssl_prefer_server_ciphers 	on;
+ssl_dhparam 			certs/dhparams.pem;
+ssl_certificate 		certs/priceinfo.su/fullchain.cer;
+ssl_certificate_key     	certs/priceinfo.su/priceinfo.su.key;
+ssl_session_cache   		shared:SSL:10m;
+ssl_session_timeout 		40m;
+}
+
+создать линк 
+ln -sf /etc/nginx/sites-available/priceinfo.su.conf /etc/nginx/sites-enabled/priceinfo.su.conf
+проверить наличие ссылки ls -la /etc/nginx/sites-enables/
+
+Должно быть так:
+
+server {
+        listen 80;
+        server_name .priceinfo.su;
+        root /var/www/html;
+        index index.html;
+        autoindex on;
+        access_log /var/log/nginx/priceinfo_su_access.log combined;
+        error_log /var/log/nginx/priceinfo_su_error.log;
+        location /.well-known/ {
+                root /home/acme/webroot;
+        }
+}
+server {
+        listen 443;
+        server_name .priceinfo.su;
+        root /var/www/html;
+        index index.html;
+        autoindex on;
+        access_log /var/log/nginx/priceinfo_su_access.log combined;
+        error_log /var/log/nginx/priceinfo_su_error.log;
+        ssl on;
+        ssl_protocols       TLSv1 TLSv1.1 TLSv1.2;
+        ssl_ciphers         HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+        ssl_certificate         certs/priceinfo.su/fullchain.cer;
+        ssl_certificate_key     certs/priceinfo.su/priceinfo.su.key;
+        ssl_session_cache   shared:SSL:10m;
+        ssl_session_timeout 40m;
+}
+
+Примеры настроек /priceinfo.su.conf
+
+server {
+        listen 80;
+        server_name .priceinfo.su;
+        root /var/www/html;
+        index index.html index.nginx-debian.html;
+        autoindex on;   
+        access_log /var/log/nginx/priceinfo_su_access.log combined;
+        error_log /var/log/nginx/priceinfo_su_error.log;
+        location / {
+                return 301 https://www.priceinfo.su$request_uri;
+        }
+        location /.well-known/ {
+                root /home/acme/webroot;
+        }
+}
+server {
+listen       443;
+server_name .priceinfo.su;
+ssl                             on;
+ssl_protocols                   TLSv1 TLSv1.1 TLSv1.2;
+ssl_ciphers                     HIGH:!aNULL:!MD5;
+ssl_prefer_server_ciphers       on;
+ssl_dhparam                     certs/dhparams.pem;
+ssl_certificate                 certs/priceinfo.su/fullchain.cer;
+ssl_certificate_key             certs/priceinfo.su/priceinfo.su.key;
+ssl_session_cache               shared:SSL:10m;
+ssl_session_timeout             40m;
+}
+
+
+
+geodns
+Для Debian 8
+
+/var/cache/bind/master.conf
+
+acl "NA"{
+      country_US;
+      country_MX;
+      country_CA;
+      country_AU;
+      country_AR;
+      country_BR;
+      country_CN;
+      country_TH;
+      country_SG;
+      country_PA;
+      country_JP;
+      country_MY;
+      country_KR;
+      country_ID;
+      country_VN;
+};
+view "NA"{
+match-clients { NA; };
+};
+view "default"{
+};
+
+
+
+/etc/bind/named.conf.options
+
+options {
+      directory "/var/cache/bind";
+      dnssec-validation auto;
+      auth-nxdomain no;    # conform to RFC1035
+      listen-on-v6 { none; };
+      listen-on { any; };
+      allow-recursion { 127.0.0.1; };
+      allow-query-cache { 127.0.0.1; };
+      notify no;
+};
+
+
+
+/etc/bind/named.conf.default-zones
+
+#
+
+Для Debian 9
+
+/var/cache/bind/master.conf
+
+acl "NA"{
+    geoip country US;
+    geoip country MX;
+    geoip country CA;
+    geoip country AU;
+    geoip country AR;
+    geoip country BR;
+    geoip country CN;
+    geoip country TH;
+    geoip country SG;
+    geoip country PA;
+    geoip country JP;
+    geoip country MY;
+    geoip country KR;
+    geoip country ID;
+    geoip country VN;
+};
+view "NA"{
+match-clients { NA; };
+};
+view "default"{
+};
+
+
+view "NA"{
+match-clients { NA; };
+zone "priceinfo.su" { file "dom_NA"; type master;};
+};
+view "default"{
+zone "priceinfo.su" { file "dom"; type master;};
+};
+
+
+/etc/bind/named.conf.options
+
+options {
+      directory "/var/cache/bind";
+      dnssec-validation auto;
+      auth-nxdomain no;    # conform to RFC1035
+      listen-on-v6 { none; };
+      listen-on { any; };
+      allow-recursion { 127.0.0.1; };
+      allow-query-cache { 127.0.0.1; };
+      notify no;
+      geoip-directory "/usr/share/GeoIP";
+};
+
+
+
+/etc/bind/named.conf.default-zones
+
+#
+
+

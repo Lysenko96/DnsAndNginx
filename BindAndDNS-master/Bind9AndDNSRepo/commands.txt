@@ -1,0 +1,399 @@
+=================
+Настройка bind-a
+=================
+#1)в файле /etc/bind/named.conf.local добавить строчку
+include "master.conf";
+
+#2)создать в /var/cache/bind/ файл example c такими параметрами: 
+$TTL 1h
+@ IN SOA ns1 root ( 
+2020110701;
+1h
+20m
+2w
+20m
+)
+@ NS ns1 
+@ NS ns2
+ns1 IN A 185.161.210.66 
+ns2 IN A 127.0.0.1      
+@   IN A 185.161.210.66
+*   IN A 185.161.210.66
+
+#3)в /var/cache/bind/ создать файл master.conf c параметрами:
+zone "example.com" {
+type master;
+file "example"; path for directory
+};
+
+проверить работоспособность dig example.com
+где example.com имя веб ресурсa
+
+service bind9 restart
+service bind9 status
+=================
+Настройка nginx-a
+=================
+#1)создать файл /etc/nginx/sites-available/example.com.conf c такими параметрами:
+server {
+        listen 80;
+        server_name .example.com;
+        root /var/www/html;
+        index index.html;
+        autoindex on;
+        access_log /var/log/nginx/example_com_access.log combined;
+        error_log /var/log/nginx/example_com_error.log;
+        }
+
+создать ссылку на sites-available из каталога sites-enabled
+ln -s /etc/nginx/sites-available/example.com.conf  /etc/nginx/sites-enabled/example.com.conf 
+
+service nginx start
+nginx -t
+nginx -s reload
+
+#2)Помимо проверки владения доменом по HTTP есть вариант проверки через DNS. Нужно использовать один из способов.
+Для работы скрипта на шлюзе должны быть установлены пакеты: 
+
+# apt-get -y install curl openssl
+useradd -m -s /bin/bash -d /home/acme/ acme // добавляем нового пользователя
+поправить права:
+chown -R acme. /home/acme/
+
+Зайти на сервер, и стать acme:
+su - acme
+Подготовить необходимое:
+mkdir ~/bin/
+curl -L -o ~/bin/acme.sh https://raw.githubusercontent.com/Neilpang/acme.sh/master/acme.sh
+chmod +x ~/bin/acme.sh
+
+Пример для nginx (прописывать в /etc/nginx/sites-enabled/*.conf перед в теле "server"):
+
+server {
+        listen 80;
+        server_name .example.com;
+        root /var/www/html;
+        index index.html;
+        autoindex on;
+        access_log /var/log/nginx/example_com_access.log combined;
+        error_log /var/log/nginx/example_com_error.log;
+        location /.well-known/ {
+        root /home/acme/webroot;
+        }
+
+        }
+
+====================
+Проверка через HTTP
+====================
+
+Стать acme:
+
+su - acme
+
+В домашнем каталоге acme создать каталог webroot: mkdir ~/webroot.
+
+Проверить можно к примеру curl`ом:
+
+~$ mkdir -p ~/webroot/.well-known/acme-challenge
+~$ echo Test > ~/webroot/.well-known/acme-challenge/test.html
+~$ curl -L http://priceinfo.su/.well-known/acme-challenge/test.html
+Test
+
+если не отработало rndc reload
+
+rm ~/webroot/.well-known/acme-challenge/test.html
+
+~/bin/acme.sh --issue -d example.com -d www.priceinfo.su -w ~/webroot
+
+Ключ и сертификаты будут в каталоге /home/acme/.acme.sh/example.com/
+
+в каталоге /etc/nginx/ создать директорию certs
+mkdir certs
+
+сгенерить шифр в каталоге certs
+openssl dhparam -out dhparams.pem 2048
+
+в mkdir создать ссылку на сертификаты
+ln -s ~acme/.acme.sh/example.com /etc/nginx/certs/
+
+перечитать конфиг 
+nginx -s reload
+
+Пример для nginx после выписки сертов (прописывать в /etc/nginx/sites-enabled/example.com.conf перед в теле "server"):
+====================
+Проверка через DNS
+====================
+от рута
+
+Шаг 1. Стать acme:
+
+su - acme
+
+Шаг 2. Выполнить:
+
+Прописать в
+/var/cache/bind/example
+добавить в конец 2 строки
+
+_acme-challenge.example.com.       IN      TXT     "......"
+_acme-challenge.www.example.com.   IN      TXT     "......"
+
+~/bin/acme.sh --issue --dns -d example.com -d '*.example.com' --yes-I-know-dns-manual-mode-enough-go-ahead-please
+после прописи ТХТ записей выполнить
+
+rndc reload
+
+dig _acme-challenge.example.com     TXT
+dig _acme-challenge.www.example.com TXT
+
+~/bin/acme.sh --renew --dns -d example.com -d '*.example.com' --yes-I-know-dns-manual-mode-enough-go-ahead-please
+
+
+в каталоге /etc/nginx/ создать директорию certs
+mkdir certs
+
+сгенерить шифр в каталоге certs
+openssl dhparam -out dhparams.pem 2048
+
+в mkdir создать ссылку на сертификаты
+ln -s ~acme/.acme.sh/example.com /etc/nginx/certs/
+
+=================================
+Общие конфиги по HTTP и DNS
+=================================
+Пример для nginx (прописывать в /etc/nginx/sites-enabled/*.conf перед в теле "server"):
+
+server {
+        listen 80;
+        server_name .example.com;
+        root /var/www/html;
+        index index.html;
+        autoindex on;
+        access_log /var/log/nginx/example_com_access.log combined;
+        error_log /var/log/nginx/example_com_error.log;
+        location / {
+                return 301 https://www.example.com$request_uri;
+        }
+        location /.well-known/ {
+                root /home/acme/webroot;
+        }
+	}
+server {
+	listen       443;
+	server_name .example.com;
+	ssl                             on;
+	ssl_protocols                   TLSv1 TLSv1.1 TLSv1.2;
+	ssl_ciphers                     HIGH:!aNULL:!MD5;
+	ssl_prefer_server_ciphers       on;
+	ssl_dhparam                     certs/dhparams.pem;
+	ssl_certificate                 certs/example.com/fullchain.cer;
+	ssl_certificate_key             certs/example.com/example.com.key;
+	ssl_session_cache               shared:SSL:10m;
+	ssl_session_timeout             40m;
+	}
+
+==================
+GEO DNS
+==================
+acl "NA"{
+    geoip country US;
+    geoip country MX;
+    geoip country CA;
+    geoip country AU;
+    geoip country AR;
+    geoip country BR;
+    geoip country CN;
+    geoip country TH;
+    geoip country SG;
+    geoip country PA;
+    geoip country JP;
+    geoip country MY;
+    geoip country KR;
+    geoip country ID;
+    geoip country VN;
+};
+
+view "NA"{
+match-clients { NA; };
+zone "example.com" { file "dom_NA"; type master;};
+};
+view "default"{
+zone "example.com" { file "dom"; type master;};
+};
+
+
+всё удалить или закоментить #
+/etc/bind/named.conf.default-zones 
+
+/etc/bind/named.conf.options
+
+options {
+      directory "/var/cache/bind";
+      dnssec-validation auto;
+      auth-nxdomain no;    # conform to RFC1035
+      listen-on-v6 { none; };
+      listen-on { any; };
+      allow-recursion { 127.0.0.1; };
+      allow-query-cache { 127.0.0.1; };
+      notify no;
+      geoip-directory "/usr/share/GeoIP";
+};
+
+==============================
+перекидывать между серверами
+==============================
+rsync -avze ssh /home/acme/.acme.sh root@195.123.241.15:/home/acme/ 
+
+
+====================================
+ss -tnlp -проверка  tcp соединения
+ss -unlp -проверка udp соединения
+lsof -i:port #проверка порта
+# remote
+nс -zv $HOST $PORT #Проверяет tcp соединение
+nc -zvu $HOST $PORT #Проверят udp соединение
+tellnet $HOST $PORT #аналогично, только для tcp соединений 
+ping $HOST #проверка ICMP
+=====================================
+BULK
+=============================================
+
+#USA Bulk
+
+upstream bulk  {
+ip_hash;
+keepalive 256;
+server 69.64.32.56:8088;
+server 199.217.115.217:8088;
+server 192.95.29.217:8088;
+}
+
+#EU Bulk
+
+upstream bulk {
+ip_hash;
+keepalive 256;
+server 217.172.172.96:8085;
+server 193.233.160.37:8085;
+server 91.121.152.205:8085;
+}
+================================================
+IPSET
+==================================================
+
+ansible-playbook ipset_new.yml - для новых серверов из резерва
+ansible-playbook ipset_gate.yml - для ранее уже настроенных, если значения не совпадают с must be 
+
+ipset после ребута
+
+ipset restore < /floppy/distr/ban/ipset_new.rules
+ipset restore < /floppy/distr/ban/ipset.rules
+/etc/init.d/netfilter-persistent restart
+/sbin/iptables-restore < /floppy/distr/ban/iptables.rules
+/etc/init.d/fail2ban start
+ 
+абузный
+
+ipset restore < /floppy/distr/ban/ipset_new.rules
+ipset restore < /floppy/distr/ban/ipset.rules
+/etc/init.d/netfilter-persistent restart
+/sbin/iptables-restore < /etc/iptables/fw
+/etc/init.d/fail2ban start
+
+iptables -nvL -t nat
+
+настройки на 30gr:
+
+ipset restore < /floppy/distr/ban/30gr/ipset.rules
+/sbin/iptables-restore < /floppy/distr/ban/30gr/iptables.rules
+/etc/init.d/fail2ban start
+=====================================================
+Подключение контейнера(пароль в HMS):
+====================================================
+losetup -f /var/crash/httpd.core
+cryptsetup create floppy /dev/loop0
+mount -o noatime,nodiratime /dev/mapper/floppy /floppy
+
+Подключение контейнера OSS.mx.mailer(пароль в HMS):
+
+losetup -f /core.img
+cryptsetup create image /dev/loop0
+mount -o noatime,nodiratime /dev/mapper/image /image
+/etc/init.d/postfix start
+=============================================
+test_buy
+================================================
+
+Bank: test
+DOB: любое
+Card Number: 4111111111111111 (Visa)
+Card Number: 5555555555554444 (MasterCard)
+Experation Date: любая дата в будущем
+Security Code: 3 значный цифровой, любой
+===============================================
+nginx configure
+===============================================
+-----------------
+virtual host name
+-----------------
+http {
+	server {
+		server_name ~^(www\.)?(?<domain>(example|admin).com)$;
+		root/var/www/$domain;
+	}
+}
+-----------------
+virtual host ip
+----------------
+http {
+	server {
+		listen 10.0.10.10:80
+		server_name admin.com www.admin.com;
+		root /var/www/admin.com/site1;
+	}
+
+server {
+		listen 10.0.10.11:80
+		server_name admin.com www.admin.com;
+		root /var/www/admin.com/site2;
+	}
+
+}
+-------------------
+location - redirect request
+-------------------
+http {
+	server {
+		listen 10.0.10.10:80
+		server_name admin.com www.admin.com;
+		root /var/www/admin.com/site1;
+		location /nginx/ {
+				proxy_pass http://nginx.org/;
+		}
+}
+------------------------------
+load balancing nginx
+------------------------------
+upstream admin-servers {
+	server web1.admin.com:8080 max_fails = 2; // max value attepmts connection max_fails = 2
+	server web2.admin.com:8080 max_fails = 2; // after server delete from pool
+
+	}
+http {
+	server {
+		server_name admin.com www.admin.com;
+		location / {
+				proxy_pass http://admin-servers;
+				// check accomplish every 30s, server unavailable after 3 failed connection, server available after 1 accomplished connection						
+				health_chek interval=30 fails=3 passes=1 uri=/health_check match=admin-health
+		}
+	}
+	match admin-health {
+		status 200;
+		header Content-Type = text/html;
+		body ~ "Red Leader, Standing By";
+	}
+}
+
+

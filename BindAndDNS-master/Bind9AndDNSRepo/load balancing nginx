@@ -1,0 +1,22 @@
+load balancing nginx
+------------------------------
+upstream admin-servers {
+	server web1.admin.com:8080 max_fails = 2; // max value attepmts connection max_fails = 2
+	server web2.admin.com:8080 max_fails = 2; // after server delete from pool
+
+	}
+http {
+	server {
+		server_name admin.com www.admin.com;
+		location / {
+				proxy_pass http://admin-servers;
+				// check accomplish every 30s, server unavailable after 3 failed connection, server available after 1 accomplished connection						
+				health_chek interval=30 fails=3 passes=1 uri=/health_check match=admin-health
+		}
+	}
+	match admin-health {
+		status 200;
+		header Content-Type = text/html;
+		body ~ "Red Leader, Standing By";
+	}
+}
